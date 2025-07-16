@@ -1,0 +1,144 @@
+version: 2.1
+
+executors:
+  terraform:
+    docker:
+      - image: hashicorp/terraform:1.6
+    working_directory: ~/project
+
+jobs:
+  provision-db:
+    executor: terraform
+    environment:
+      TF_VAR_db_pass: postgres123 # Placeholder. Set securely later.
+    steps:
+      - checkout
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+      - run:
+          name: Init & Apply Terraform
+          command: |
+            cd terraform
+            terraform init
+            terraform apply -auto-approve \
+              -var="project_id=$GCP_PROJECT_ID" \
+              -var="instance_name=sql-${CIRCLE_BRANCH}" \
+              -var="db_pass=$TF_VAR_db_pass"
+
+  run-migrations:
+    docker:
+      - image: cimg/base:stable
+    environment:
+      DB_PORT: 5432
+    steps:
+      - checkout
+      - run:
+          name: Install migrate CLI
+          command: |
+            curl -L https://github.com/golang-migrate/migrate/releases/download/v4.15.2/migrate.linux-amd64.tar.gz | tar xz
+            mv migrate /usr/local/bin/migrate
+      - run:
+          name: Extract Terraform Outputs
+          command: |
+            cd terraform
+            terraform init
+            terraform output -raw db_public_ip > ../DB_HOST
+            terraform output -raw db_user > ../DB_USER
+            terraform output -raw db_name > ../DB_NAME
+      - run:
+          name: Run DB Migrations
+          command: |
+            DB_HOST=$(cat DB_HOST)
+            DB_USER=$(cat DB_USER)
+            DB_NAME=$(cat DB_NAME)
+            migrate -path api/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
+
+  destroy-db:
+    executor: terraform
+    steps:
+      - checkout
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+      - run:
+          name: Destroy Terraform Resources
+          command: |
+            cd terraform
+            terraform init
+            terraform destroy -auto-approve \
+              -var="project_id=$GCP_PROJECT_ID" \
+              -var="instance_name=sql-${CIRCLE_BRANCH}" \
+              -var="db_pass=$TF_VAR_db_pass"
+
+  test-go-api:
+    docker:
+      - image: cimg/go:1.22
+    environment:
+      DB_PORT: 5432
+    steps:
+      - checkout
+      - run:
+          name: Extract DB info from Terraform outputs
+          command: |
+            cd terraform
+            terraform init
+            terraform output -raw db_public_ip > ../DB_HOST
+            terraform output -raw db_user > ../DB_USER
+            terraform output -raw db_name > ../DB_NAME
+      - run:
+          name: Run and Test Go API
+          command: |
+            DB_HOST=$(cat DB_HOST)
+            DB_USER=$(cat DB_USER)
+            DB_NAME=$(cat DB_NAME)
+
+            export DB_HOST=$DB_HOST
+            export DB_USER=$DB_USER
+            export DB_NAME=$DB_NAME
+            export DB_PASS=$TF_VAR_db_pass
+            export DB_PORT=5432
+            export PORT=8080
+
+            echo "Starting Go API in background..."
+            go run main.go &
+            APP_PID=$!
+
+            echo "Waiting for API to boot..."
+            sleep 5
+
+            echo "Testing /health endpoint..."
+            curl --fail http://localhost:8080/health
+
+            echo "Killing Go API"
+            kill $APP_PID
+
+workflows:
+  version: 2
+  cloudsql-dev:
+    jobs:
+      - provision-db:
+          filters:
+            branches:
+              only: /^feature\/.*/
+
+      - run-migrations:
+          requires:
+            - provision-db
+
+      - test-go-api:
+          requires:
+            - run-migrations
+
+      - destroy-db:
+          filters:
+            branches:
+              only: main
+          requires:
+            - provision-db
