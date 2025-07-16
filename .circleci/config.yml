@@ -1,30 +1,36 @@
 version: 2.1
 
 executors:
-  terraform:
+  base:
     docker:
-      - image: hashicorp/terraform:1.6
+      - image: cimg/base:stable
     working_directory: ~/project
+
+commands:
+  install-tools:
+    steps:
+      - run:
+          name: Install Terraform and gcloud
+          command: |
+            # Install Terraform
+            sudo apt-get update && sudo apt-get install -y gnupg curl lsb-release software-properties-common unzip
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+            sudo apt-get update && sudo apt-get install terraform -y
+
+            # Install gcloud
+            curl -sSL https://sdk.cloud.google.com | bash
+            source "$HOME/google-cloud-sdk/path.bash.inc"
+            echo 'source "$HOME/google-cloud-sdk/path.bash.inc"' >> $BASH_ENV
 
 jobs:
   provision-db:
-    executor: terraform
-    docker:
-      - image: cimg/base:stable
+    executor: base
     environment:
-      TF_VAR_db_pass: postgres123 # Placeholder. Set securely later.
+      TF_VAR_db_pass: postgres123
     steps:
       - checkout
-      - run:
-          name: Install gcloud CLI
-          command: |
-            export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-            curl https://sdk.cloud.google.com | bash
-            source /home/circleci/google-cloud-sdk/path.bash.inc
-            source /home/circleci/google-cloud-sdk/completion.bash.inc
-            echo "source /home/circleci/google-cloud-sdk/path.bash.inc" >> $BASH_ENV
-            echo "source /home/circleci/google-cloud-sdk/completion.bash.inc" >> $BASH_ENV
-            gcloud version
+      - install-tools
       - run:
           name: Authenticate GCP
           command: |
@@ -42,11 +48,12 @@ jobs:
               -var="db_pass=$TF_VAR_db_pass"
 
   run-migrations:
-    executor: terraform
+    executor: base
     environment:
       DB_PORT: 5432
     steps:
       - checkout
+      - install-tools
       - run:
           name: Install migrate CLI
           command: |
@@ -66,7 +73,7 @@ jobs:
             DB_HOST=$(cat DB_HOST)
             DB_USER=$(cat DB_USER)
             DB_NAME=$(cat DB_NAME)
-            migrate -path api/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
+            migrate -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
   test-go-api:
     docker:
@@ -111,22 +118,10 @@ jobs:
             kill $APP_PID
 
   destroy-db:
-    executor: terraform
-    docker:
-      - image: cimg/base:stable
+    executor: base
     steps:
       - checkout
-      - run:
-          name: Install gcloud CLI
-          command: |
-            export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-            curl https://sdk.cloud.google.com | bash
-            source /home/circleci/google-cloud-sdk/path.bash.inc
-            source /home/circleci/google-cloud-sdk/completion.bash.inc
-            echo "source /home/circleci/google-cloud-sdk/path.bash.inc" >> $BASH_ENV
-            echo "source /home/circleci/google-cloud-sdk/completion.bash.inc" >> $BASH_ENV
-            gcloud version
-
+      - install-tools
       - run:
           name: Authenticate GCP
           command: |
