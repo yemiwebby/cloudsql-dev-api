@@ -14,6 +14,16 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Install gcloud CLI
+          command: |
+            export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+            curl https://sdk.cloud.google.com | bash
+            source /home/circleci/google-cloud-sdk/path.bash.inc
+            source /home/circleci/google-cloud-sdk/completion.bash.inc
+            echo "source /home/circleci/google-cloud-sdk/path.bash.inc" >> $BASH_ENV
+            echo "source /home/circleci/google-cloud-sdk/completion.bash.inc" >> $BASH_ENV
+            gcloud version
+      - run:
           name: Authenticate GCP
           command: |
             echo "$GCLOUD_SERVICE_KEY" > creds.json
