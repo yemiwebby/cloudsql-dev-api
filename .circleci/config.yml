@@ -3,7 +3,7 @@ version: 2.1
 executors:
   terraform:
     docker:
-      - image: hashicorp/terraform:1.6
+      - image: cimg/google-cloud:2024.03 # Includes gcloud + terraform
     working_directory: ~/project
 
 jobs:
@@ -13,16 +13,6 @@ jobs:
       TF_VAR_db_pass: postgres123 # Placeholder. Set securely later.
     steps:
       - checkout
-      - run:
-          name: Install gcloud CLI
-          command: |
-            export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-            curl https://sdk.cloud.google.com | bash
-            source /home/circleci/google-cloud-sdk/path.bash.inc
-            source /home/circleci/google-cloud-sdk/completion.bash.inc
-            echo "source /home/circleci/google-cloud-sdk/path.bash.inc" >> $BASH_ENV
-            echo "source /home/circleci/google-cloud-sdk/completion.bash.inc" >> $BASH_ENV
-            gcloud version
       - run:
           name: Authenticate GCP
           command: |
@@ -40,8 +30,7 @@ jobs:
               -var="db_pass=$TF_VAR_db_pass"
 
   run-migrations:
-    docker:
-      - image: cimg/base:stable
+    executor: terraform
     environment:
       DB_PORT: 5432
     steps:
@@ -67,29 +56,9 @@ jobs:
             DB_NAME=$(cat DB_NAME)
             migrate -path api/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
-  destroy-db:
-    executor: terraform
-    steps:
-      - checkout
-      - run:
-          name: Authenticate GCP
-          command: |
-            echo "$GCLOUD_SERVICE_KEY" > creds.json
-            gcloud auth activate-service-account --key-file=creds.json
-            gcloud config set project "$GCP_PROJECT_ID"
-      - run:
-          name: Destroy Terraform Resources
-          command: |
-            cd terraform
-            terraform init
-            terraform destroy -auto-approve \
-              -var="project_id=$GCP_PROJECT_ID" \
-              -var="instance_name=sql-${CIRCLE_BRANCH}" \
-              -var="db_pass=$TF_VAR_db_pass"
-
   test-go-api:
     docker:
-      - image: cimg/go:1.22
+      - image: cimg/go:1.24
     environment:
       DB_PORT: 5432
     steps:
@@ -128,6 +97,26 @@ jobs:
 
             echo "Killing Go API"
             kill $APP_PID
+
+  destroy-db:
+    executor: terraform
+    steps:
+      - checkout
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+      - run:
+          name: Destroy Terraform Resources
+          command: |
+            cd terraform
+            terraform init
+            terraform destroy -auto-approve \
+              -var="project_id=$GCP_PROJECT_ID" \
+              -var="instance_name=sql-${CIRCLE_BRANCH}" \
+              -var="db_pass=$TF_VAR_db_pass"
 
 workflows:
   version: 2
