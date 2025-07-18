@@ -51,13 +51,14 @@ jobs:
       - run:
           name: Init & Apply Terraform
           command: |
+            echo "$GCLOUD_SERVICE_KEY" | jq .
             cd terraform
             terraform init
             terraform apply -auto-approve \
               -var="project_id=$GCP_PROJECT_ID" \
               -var="instance_name=sql-${CIRCLE_BRANCH}" \
               -var="db_pass=$TF_VAR_db_pass" \
-              -var='gcp_credentials_json=$GCLOUD_SERVICE_KEY'
+              -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
 
   run-migrations:
     executor: base
