@@ -43,20 +43,19 @@ jobs:
             gcloud config set project "$GCP_PROJECT_ID"
 
       - run:
-          name: Debug directory
+          name: Sanitize branch name
           command: |
-            pwd
-            ls -lah
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
 
       - run:
           name: Init & Apply Terraform
           command: |
-            echo "$GCLOUD_SERVICE_KEY" | jq .
             cd terraform
             terraform init
             terraform apply -auto-approve \
               -var="project_id=$GCP_PROJECT_ID" \
-              -var="instance_name=sql-${CIRCLE_BRANCH}" \
+              -var="instance_name=sql-${SANITIZED_BRANCH}" \
               -var="db_pass=$TF_VAR_db_pass" \
               -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
 
