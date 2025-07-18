@@ -13,7 +13,6 @@ resource "google_sql_database_instance" "postgres" {
 
     ip_configuration {
       ipv4_enabled    = true
-      require_ssl     = false
     }
 
     backup_configuration {
