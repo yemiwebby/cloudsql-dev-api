@@ -1,7 +1,7 @@
 provider "google" {
   project = var.project_id
   region  = var.region
-  credentials = file("cred.json")
+  credentials = file("creds.json")
 }
 
 resource "google_sql_database_instance" "postgres" {
