@@ -23,7 +23,7 @@ commands:
             terraform version
 
             # Install gcloud
-            curl -sSL https://sdk.cloud.google.com | bash
+            curl -sSL https://sdk.cloud.google.com | bash -s -- --quiet
             source "$HOME/google-cloud-sdk/path.bash.inc"
             echo 'source "$HOME/google-cloud-sdk/path.bash.inc"' >> $BASH_ENV
 
