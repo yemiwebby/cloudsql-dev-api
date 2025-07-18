@@ -67,15 +67,17 @@ jobs:
       - checkout
       - install-tools
       - run:
-          name: Install migrate CLI
+          name: Install golang-migrate CLI
           command: |
-            curl -L https://github.com/golang-migrate/migrate/releases/download/v4.15.2/migrate.linux-amd64.tar.gz | tar xz
-            mv migrate /usr/local/bin/migrate
+            curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz -o migrate.tar.gz
+            tar -xzf migrate.tar.gz
+            sudo mv migrate /usr/local/bin/migrate
+            migrate -version
       - run:
           name: Extract Terraform Outputs
           command: |
             cd terraform
-            terraform init
+            terraform init -input=false
             terraform output -raw db_public_ip > ../DB_HOST
             terraform output -raw db_user > ../DB_USER
             terraform output -raw db_name > ../DB_NAME
