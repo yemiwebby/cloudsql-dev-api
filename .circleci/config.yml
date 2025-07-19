@@ -84,9 +84,17 @@ jobs:
           command: |
             cd terraform
             terraform init -input=false
-            terraform output -raw db_public_ip > ../DB_HOST
-            terraform output -raw db_user > ../DB_USER
-            terraform output -raw db_name > ../DB_NAME
+            terraform output -raw db_public_ip > ../DB_HOST || exit 1
+            terraform output -raw db_user > ../DB_USER || exit 1
+            terraform output -raw db_name > ../DB_NAME || exit 1
+
+      - run:
+          name: Debug DB values
+          command: |
+            echo "DB_HOST: $(cat DB_HOST)"
+            echo "DB_USER: $(cat DB_USER)"
+            echo "DB_NAME: $(cat DB_NAME)"
+
       - run:
           name: Run DB Migrations
           command: |
