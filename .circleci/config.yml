@@ -93,15 +93,19 @@ jobs:
           command: |
             source $BASH_ENV
             cd terraform
-            terraform init || true
+            terraform init -input=false || true
+            terraform refresh -input=false || true
 
-            terraform output -raw db_public_ip > ../DB_HOST 2>/dev/null || true
-            terraform output -raw db_user > ../DB_USER 2>/dev/null || true
-            terraform output -raw db_name > ../DB_NAME 2>/dev/null || true
+            DB_HOST=$(terraform output -raw db_public_ip 2>/dev/null || echo "")
+            DB_USER=$(terraform output -raw db_user 2>/dev/null || echo "")
+            DB_NAME=$(terraform output -raw db_name 2>/dev/null || echo "")
+
+            echo "$DB_HOST" > ../DB_HOST
+            echo "$DB_USER" > ../DB_USER
+            echo "$DB_NAME" > ../DB_NAME
 
             cd ..
 
-            # Fallback to gcloud if any values are missing or empty
             if [ ! -s DB_HOST ]; then
               echo "Falling back to gcloud to fetch DB host..."
               DB_HOST=$(gcloud sql instances describe "$INSTANCE_NAME" --format="value(ipAddresses[0].ipAddress)")
