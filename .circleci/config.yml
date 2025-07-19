@@ -74,6 +74,12 @@ jobs:
       - checkout
       - install-tools
       - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+      - run:
           name: Sanitize branch name
           command: |
             export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
