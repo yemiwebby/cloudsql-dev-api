@@ -9,6 +9,10 @@ resource "google_sql_database_instance" "postgres" {
   database_version = "POSTGRES_13"
   region           = var.region
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   settings {
     tier = "db-f1-micro"
 

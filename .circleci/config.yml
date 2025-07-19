@@ -49,13 +49,14 @@ jobs:
             echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
 
       - run:
-          name: Check if DB instance exists & optionally skip Terraform apply
+          name: Check if DB instance exists, run terraform apply if not
           command: |
             source $BASH_ENV
             INSTANCE_NAME="sql-${SANITIZED_BRANCH}"
             if gcloud sql instances describe "$INSTANCE_NAME" > /dev/null 2>&1; then
               echo "Cloud SQL instance '$INSTANCE_NAME' already exists. Skipping terraform apply."
             else
+              echo "Instance does not exist. Running terraform apply..."
               cd terraform
               terraform init
               terraform apply -auto-approve \
@@ -73,20 +74,27 @@ jobs:
       - checkout
       - install-tools
       - run:
+          name: Sanitize branch name
+          command: |
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+      - run:
           name: Install golang-migrate CLI
           command: |
             curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz -o migrate.tar.gz
             tar -xzf migrate.tar.gz
             sudo mv migrate /usr/local/bin/migrate
             migrate -version
+
       - run:
-          name: Extract Terraform Outputs
+          name: Get DB Info via gcloud
           command: |
-            cd terraform
-            terraform init -input=false
-            terraform output -raw db_public_ip > ../DB_HOST || exit 1
-            terraform output -raw db_user > ../DB_USER || exit 1
-            terraform output -raw db_name > ../DB_NAME || exit 1
+            DB_HOST=$(gcloud sql instances describe sql-${SANITIZED_BRANCH} --format='value(ipAddresses[0].ipAddress)')
+            DB_USER="postgres"
+            DB_NAME="devdb"
+            echo "export DB_HOST=${DB_HOST}" >> $BASH_ENV
+            echo "export DB_USER=${DB_USER}" >> $BASH_ENV
+            echo "export DB_NAME=${DB_NAME}" >> $BASH_ENV
 
       - run:
           name: Debug DB values
@@ -98,9 +106,6 @@ jobs:
       - run:
           name: Run DB Migrations
           command: |
-            DB_HOST=$(cat DB_HOST)
-            DB_USER=$(cat DB_USER)
-            DB_NAME=$(cat DB_NAME)
             migrate -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
   test-go-api:
@@ -110,43 +115,38 @@ jobs:
       DB_PORT: 5432
     steps:
       - checkout
+      - install-tools
       - run:
-          name: Extract DB info from Terraform outputs
+          name: Sanitize branch name
           command: |
-            cd terraform
-            terraform init
-            terraform output -raw db_public_ip > ../DB_HOST
-            terraform output -raw db_user > ../DB_USER
-            terraform output -raw db_name > ../DB_NAME
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+      - run:
+          name: Get DB Info via gcloud
+          command: |
+            DB_HOST=$(gcloud sql instances describe sql-${SANITIZED_BRANCH} --format='value(ipAddresses[0].ipAddress)')
+            DB_USER="postgres"
+            DB_NAME="devdb"
+            echo "export DB_HOST=${DB_HOST}" >> $BASH_ENV
+            echo "export DB_USER=${DB_USER}" >> $BASH_ENV
+            echo "export DB_NAME=${DB_NAME}" >> $BASH_ENV
+
       - run:
           name: Run and Test Go API
           command: |
-            DB_HOST=$(cat DB_HOST)
-            DB_USER=$(cat DB_USER)
-            DB_NAME=$(cat DB_NAME)
-
-            export DB_HOST=$DB_HOST
-            export DB_USER=$DB_USER
-            export DB_NAME=$DB_NAME
             export DB_PASS=$TF_VAR_db_pass
-            export DB_PORT=5432
             export PORT=8080
-
-            echo "Starting Go API in background..."
             go run main.go &
             APP_PID=$!
-
-            echo "Waiting for API to boot..."
             sleep 5
-
-            echo "Testing /health endpoint..."
             curl --fail http://localhost:8080/health
-
-            echo "Killing Go API"
             kill $APP_PID
 
   destroy-db:
     executor: base
+    environment:
+      TF_VAR_db_pass: postgres123
     steps:
       - checkout
       - install-tools
@@ -172,7 +172,8 @@ jobs:
             terraform destroy -auto-approve \
               -var="project_id=$GCP_PROJECT_ID" \
               -var="instance_name=sql-${SANITIZED_BRANCH}" \
-              -var="db_pass=$TF_VAR_db_pass"
+              -var="db_pass=$TF_VAR_db_pass" \
+              -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
 
 workflows:
   version: 2
