@@ -12,12 +12,14 @@ commands:
       - run:
           name: Install Terraform and gcloud
           command: |
+            # Install Terraform via zip 
             TERRAFORM_VERSION=1.12.2
             curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -o terraform.zip
             unzip -o terraform.zip -d tf-bin
             sudo mv tf-bin/terraform /usr/local/bin/
             terraform version
 
+            # Install gcloud
             export CLOUDSDK_CORE_DISABLE_PROMPTS=1
             export CLOUDSDK_INSTALL_DIR=$HOME
             curl -sSL https://sdk.cloud.google.com | bash
@@ -26,11 +28,48 @@ commands:
             gcloud version
 
 jobs:
+  provision-db:
+    executor: base
+    environment:
+      TF_VAR_db_pass: postgres123
+    steps:
+      - checkout
+      - install-tools
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+
+      - run:
+          name: Sanitize branch name
+          command: |
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+      - run:
+          name: Check if DB instance exists, run terraform apply if not
+          command: |
+            source $BASH_ENV
+            INSTANCE_NAME="sql-${SANITIZED_BRANCH}"
+            if gcloud sql instances describe "$INSTANCE_NAME" > /dev/null 2>&1; then
+              echo "Cloud SQL instance '$INSTANCE_NAME' already exists. Skipping terraform apply."
+            else
+              echo "Instance does not exist. Running terraform apply..."
+              cd terraform
+              terraform init
+              terraform apply -auto-approve \
+                -var="project_id=$GCP_PROJECT_ID" \
+                -var="instance_name=$INSTANCE_NAME" \
+                -var="db_pass=$TF_VAR_db_pass" \
+                -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
+            fi
+
   run-migrations:
     executor: base
     environment:
       DB_PORT: 5432
-      TF_VAR_db_pass: postgres123
     steps:
       - checkout
       - install-tools
@@ -43,7 +82,7 @@ jobs:
             gcloud config set project "$GCP_PROJECT_ID"
 
       - run:
-          name: Generate random instance name
+          name: Generate unique instance name
           command: |
             RAND_ID=$(LC_CTYPE=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
             export INSTANCE_NAME="sql-${CIRCLE_BRANCH//[^a-zA-Z0-9]/}-${RAND_ID}"
@@ -51,7 +90,7 @@ jobs:
             echo "Generated instance name: $INSTANCE_NAME"
 
       - run:
-          name: Provision Cloud SQL with Terraform
+          name: Terraform Init & Apply
           command: |
             source $BASH_ENV
             cd terraform
@@ -60,18 +99,18 @@ jobs:
               -var="instance_name=$INSTANCE_NAME" \
               -var="project_id=$GCP_PROJECT_ID" \
               -var="region=$GCP_REGION" \
-              -var="db_user=postgres" \
+              -var="db_user=$TF_VAR_db_user" \
               -var="db_pass=$TF_VAR_db_pass" \
-              -var="db_name=devdb" \
+              -var="db_name=$TF_VAR_db_name" \
               -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
 
       - run:
-          name: Extract DB Info
+          name: Extract DB Info from Terraform Outputs
           command: |
             cd terraform
             terraform output -raw db_public_ip > ../DB_HOST
-            echo "postgres" > ../DB_USER
-            echo "devdb" > ../DB_NAME
+            terraform output -raw db_user > ../DB_USER
+            terraform output -raw db_name > ../DB_NAME
 
       - run:
           name: Install golang-migrate
@@ -91,11 +130,314 @@ jobs:
             echo "Connecting to DB at $DB_HOST"
             migrate -verbose -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
+  test-go-api:
+    docker:
+      - image: cimg/go:1.24
+    environment:
+      DB_PORT: 5432
+    steps:
+      - checkout
+      - install-tools
+      - run:
+          name: Sanitize branch name
+          command: |
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+      - run:
+          name: Get DB Info via gcloud
+          command: |
+            DB_HOST=$(gcloud sql instances describe sql-${SANITIZED_BRANCH} --format='value(ipAddresses[0].ipAddress)')
+            DB_USER="postgres"
+            DB_NAME="devdb"
+            echo "export DB_HOST=${DB_HOST}" >> $BASH_ENV
+            echo "export DB_USER=${DB_USER}" >> $BASH_ENV
+            echo "export DB_NAME=${DB_NAME}" >> $BASH_ENV
+
+      - run:
+          name: Run and Test Go API
+          command: |
+            export DB_PASS=$TF_VAR_db_pass
+            export PORT=8080
+            go run main.go &
+            APP_PID=$!
+            sleep 5
+            curl --fail http://localhost:8080/health
+            kill $APP_PID
+
+  destroy-db:
+    executor: base
+    environment:
+      TF_VAR_db_pass: postgres123
+    steps:
+      - checkout
+      - install-tools
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+
+      - run:
+          name: Sanitize branch name
+          command: |
+            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+      - run:
+          name: Destroy Terraform Resources
+          command: |
+            source $BASH_ENV
+            cd terraform
+            terraform init
+            terraform destroy -auto-approve \
+              -var="project_id=$GCP_PROJECT_ID" \
+              -var="instance_name=sql-${SANITIZED_BRANCH}" \
+              -var="db_pass=$TF_VAR_db_pass" \
+              -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
+
 workflows:
   version: 2
   cloudsql-dev:
     jobs:
-      - run-migrations:
+      - provision-db:
           filters:
             branches:
               only: /^feature\/.*/
+
+      - run-migrations:
+          requires:
+            - provision-db
+
+      - test-go-api:
+          requires:
+            - run-migrations
+
+      - destroy-db:
+          filters:
+            branches:
+              only: main
+          requires:
+            - provision-db
+# version: 2.1
+
+# executors:
+#   base:
+#     docker:
+#       - image: cimg/base:stable
+#     working_directory: ~/project
+
+# commands:
+#   install-tools:
+#     steps:
+#       - run:
+#           name: Install Terraform and gcloud
+#           command: |
+#             # Install Terraform via zip
+#             TERRAFORM_VERSION=1.12.2
+#             curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -o terraform.zip
+#             unzip -o terraform.zip -d tf-bin
+#             sudo mv tf-bin/terraform /usr/local/bin/
+#             terraform version
+
+#             # Install gcloud
+#             export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+#             export CLOUDSDK_INSTALL_DIR=$HOME
+#             curl -sSL https://sdk.cloud.google.com | bash
+#             source "$HOME/google-cloud-sdk/path.bash.inc"
+#             echo 'source "$HOME/google-cloud-sdk/path.bash.inc"' >> $BASH_ENV
+#             gcloud version
+
+# jobs:
+#   provision-db:
+#     executor: base
+#     environment:
+#       TF_VAR_db_pass: postgres123
+#     steps:
+#       - checkout
+#       - install-tools
+#       - run:
+#           name: Authenticate GCP
+#           command: |
+#             echo "$GCLOUD_SERVICE_KEY" > creds.json
+#             gcloud auth activate-service-account --key-file=creds.json
+#             gcloud config set project "$GCP_PROJECT_ID"
+
+#       - run:
+#           name: Sanitize branch name
+#           command: |
+#             export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+#             echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+#       - run:
+#           name: Check if DB instance exists, run terraform apply if not
+#           command: |
+#             source $BASH_ENV
+#             INSTANCE_NAME="sql-${SANITIZED_BRANCH}"
+#             if gcloud sql instances describe "$INSTANCE_NAME" > /dev/null 2>&1; then
+#               echo "Cloud SQL instance '$INSTANCE_NAME' already exists. Skipping terraform apply."
+#             else
+#               echo "Instance does not exist. Running terraform apply..."
+#               cd terraform
+#               terraform init
+#               terraform apply -auto-approve \
+#                 -var="project_id=$GCP_PROJECT_ID" \
+#                 -var="instance_name=$INSTANCE_NAME" \
+#                 -var="db_pass=$TF_VAR_db_pass" \
+#                 -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
+#             fi
+
+#   run-migrations:
+#     executor: base
+#     environment:
+#       DB_PORT: 5432
+#     steps:
+#       - checkout
+#       - install-tools
+
+#       - run:
+#           name: Authenticate GCP
+#           command: |
+#             echo "$GCLOUD_SERVICE_KEY" > creds.json
+#             gcloud auth activate-service-account --key-file=creds.json
+#             gcloud config set project "$GCP_PROJECT_ID"
+
+#       - run:
+#           name: Generate unique instance name
+#           command: |
+#             RAND_ID=$(LC_CTYPE=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
+#             export INSTANCE_NAME="sql-${CIRCLE_BRANCH//[^a-zA-Z0-9]/}-${RAND_ID}"
+#             echo "export INSTANCE_NAME=$INSTANCE_NAME" >> $BASH_ENV
+#             echo "Generated instance name: $INSTANCE_NAME"
+
+#       - run:
+#           name: Terraform Init & Apply
+#           command: |
+#             cd terraform
+#             terraform init
+#             terraform apply -auto-approve \
+#               -var="instance_name=$INSTANCE_NAME" \
+#               -var="project_id=$GCP_PROJECT_ID" \
+#               -var="region=$GCP_REGION" \
+#               -var="db_user=$TF_VAR_db_user" \
+#               -var="db_pass=$TF_VAR_db_pass" \
+#               -var="db_name=$TF_VAR_db_name" \
+#               -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
+
+#       - run:
+#           name: Extract DB Info from Terraform Outputs
+#           command: |
+#             cd terraform
+#             terraform output -raw db_public_ip > ../DB_HOST
+#             terraform output -raw db_user > ../DB_USER
+#             terraform output -raw db_name > ../DB_NAME
+
+#       - run:
+#           name: Install golang-migrate
+#           command: |
+#             curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz -o migrate.tar.gz
+#             tar -xzf migrate.tar.gz
+#             sudo mv migrate /usr/local/bin/migrate
+#             migrate -version
+
+#       - run:
+#           name: Run DB Migrations
+#           command: |
+#             DB_HOST=$(cat DB_HOST)
+#             DB_USER=$(cat DB_USER)
+#             DB_NAME=$(cat DB_NAME)
+
+#             echo "Connecting to DB at $DB_HOST"
+#             migrate -verbose -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
+
+#   test-go-api:
+#     docker:
+#       - image: cimg/go:1.24
+#     environment:
+#       DB_PORT: 5432
+#     steps:
+#       - checkout
+#       - install-tools
+#       - run:
+#           name: Sanitize branch name
+#           command: |
+#             export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+#             echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+#       - run:
+#           name: Get DB Info via gcloud
+#           command: |
+#             DB_HOST=$(gcloud sql instances describe sql-${SANITIZED_BRANCH} --format='value(ipAddresses[0].ipAddress)')
+#             DB_USER="postgres"
+#             DB_NAME="devdb"
+#             echo "export DB_HOST=${DB_HOST}" >> $BASH_ENV
+#             echo "export DB_USER=${DB_USER}" >> $BASH_ENV
+#             echo "export DB_NAME=${DB_NAME}" >> $BASH_ENV
+
+#       - run:
+#           name: Run and Test Go API
+#           command: |
+#             export DB_PASS=$TF_VAR_db_pass
+#             export PORT=8080
+#             go run main.go &
+#             APP_PID=$!
+#             sleep 5
+#             curl --fail http://localhost:8080/health
+#             kill $APP_PID
+
+#   destroy-db:
+#     executor: base
+#     environment:
+#       TF_VAR_db_pass: postgres123
+#     steps:
+#       - checkout
+#       - install-tools
+#       - run:
+#           name: Authenticate GCP
+#           command: |
+#             echo "$GCLOUD_SERVICE_KEY" > creds.json
+#             gcloud auth activate-service-account --key-file=creds.json
+#             gcloud config set project "$GCP_PROJECT_ID"
+
+#       - run:
+#           name: Sanitize branch name
+#           command: |
+#             export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+#             echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
+
+#       - run:
+#           name: Destroy Terraform Resources
+#           command: |
+#             source $BASH_ENV
+#             cd terraform
+#             terraform init
+#             terraform destroy -auto-approve \
+#               -var="project_id=$GCP_PROJECT_ID" \
+#               -var="instance_name=sql-${SANITIZED_BRANCH}" \
+#               -var="db_pass=$TF_VAR_db_pass" \
+#               -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
+
+# workflows:
+#   version: 2
+#   cloudsql-dev:
+#     jobs:
+#       - provision-db:
+#           filters:
+#             branches:
+#               only: /^feature\/.*/
+
+#       - run-migrations:
+#           requires:
+#             - provision-db
+
+#       - test-go-api:
+#           requires:
+#             - run-migrations
+
+#       - destroy-db:
+#           filters:
+#             branches:
+#               only: main
+#           requires:
+#             - provision-db
