@@ -72,7 +72,6 @@ jobs:
       DB_PORT: 5432
     steps:
       - checkout
-
       - install-tools
 
       - run:
@@ -83,44 +82,34 @@ jobs:
             gcloud config set project "$GCP_PROJECT_ID"
 
       - run:
-          name: Determine instance name
+          name: Generate unique instance name
           command: |
-            export SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-            echo "export SANITIZED_BRANCH=$SANITIZED_BRANCH" >> $BASH_ENV
-            echo "export INSTANCE_NAME=sql-$SANITIZED_BRANCH" >> $BASH_ENV
+            RAND_ID=$(LC_CTYPE=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
+            export INSTANCE_NAME="sql-${CIRCLE_BRANCH//[^a-zA-Z0-9]/}-${RAND_ID}"
+            echo "export INSTANCE_NAME=$INSTANCE_NAME" >> $BASH_ENV
+            echo "Generated instance name: $INSTANCE_NAME"
 
       - run:
-          name: Extract DB info from Terraform or fallback to gcloud
+          name: Terraform Init & Apply
           command: |
-            source $BASH_ENV
             cd terraform
-            terraform init -input=false || true
-            terraform refresh -input=false || true
+            terraform init
+            terraform apply -auto-approve \
+              -var="instance_name=$INSTANCE_NAME" \
+              -var="project_id=$GCP_PROJECT_ID" \
+              -var="region=$GCP_REGION" \
+              -var="db_user=$TF_VAR_db_user" \
+              -var="db_pass=$TF_VAR_db_pass" \
+              -var="db_name=$TF_VAR_db_name" \
+              -var="gcp_credentials_json=$GCLOUD_SERVICE_KEY"
 
-            # Extract outputs safely
-            DB_HOST=$(terraform output -raw db_public_ip 2>/dev/null || echo "")
-            DB_USER=$(terraform output -raw db_user 2>/dev/null || echo "")
-            DB_NAME=$(terraform output -raw db_name 2>/dev/null || echo "")
-
-            cd ..
-
-            # Fallback if outputs are empty or invalid
-            if [[ "$DB_HOST" == *"Warning:"* || -z "$DB_HOST" ]]; then
-              echo "Falling back to gcloud for DB_HOST..."
-              DB_HOST=$(gcloud sql instances describe "$INSTANCE_NAME" --format="value(ipAddresses[0].ipAddress)")
-            fi
-
-            if [[ "$DB_USER" == *"Warning:"* || -z "$DB_USER" ]]; then
-              DB_USER="postgres"
-            fi
-
-            if [[ "$DB_NAME" == *"Warning:"* || -z "$DB_NAME" ]]; then
-              DB_NAME="devdb"
-            fi
-
-            echo "$DB_HOST" > DB_HOST
-            echo "$DB_USER" > DB_USER
-            echo "$DB_NAME" > DB_NAME
+      - run:
+          name: Extract DB Info from Terraform Outputs
+          command: |
+            cd terraform
+            terraform output -raw db_public_ip > ../DB_HOST
+            terraform output -raw db_user > ../DB_USER
+            terraform output -raw db_name > ../DB_NAME
 
       - run:
           name: Install golang-migrate
@@ -138,8 +127,7 @@ jobs:
             DB_NAME=$(cat DB_NAME)
 
             echo "Connecting to DB at $DB_HOST"
-            migrate -verbose -path db/migrations \
-              -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
+            migrate -verbose -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
   test-go-api:
     docker:
