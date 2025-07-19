@@ -72,6 +72,7 @@ jobs:
       DB_PORT: 5432
     steps:
       - checkout
+
       - install-tools
 
       - run:
@@ -96,29 +97,30 @@ jobs:
             terraform init -input=false || true
             terraform refresh -input=false || true
 
+            # Extract outputs safely
             DB_HOST=$(terraform output -raw db_public_ip 2>/dev/null || echo "")
             DB_USER=$(terraform output -raw db_user 2>/dev/null || echo "")
             DB_NAME=$(terraform output -raw db_name 2>/dev/null || echo "")
 
-            echo "$DB_HOST" > ../DB_HOST
-            echo "$DB_USER" > ../DB_USER
-            echo "$DB_NAME" > ../DB_NAME
-
             cd ..
 
-            if [ ! -s DB_HOST ]; then
-              echo "Falling back to gcloud to fetch DB host..."
+            # Fallback if outputs are empty or invalid
+            if [[ "$DB_HOST" == *"Warning:"* || -z "$DB_HOST" ]]; then
+              echo "Falling back to gcloud for DB_HOST..."
               DB_HOST=$(gcloud sql instances describe "$INSTANCE_NAME" --format="value(ipAddresses[0].ipAddress)")
-              echo "$DB_HOST" > DB_HOST
             fi
 
-            if [ ! -s DB_USER ]; then
-              echo "postgres" > DB_USER
+            if [[ "$DB_USER" == *"Warning:"* || -z "$DB_USER" ]]; then
+              DB_USER="postgres"
             fi
 
-            if [ ! -s DB_NAME ]; then
-              echo "devdb" > DB_NAME
+            if [[ "$DB_NAME" == *"Warning:"* || -z "$DB_NAME" ]]; then
+              DB_NAME="devdb"
             fi
+
+            echo "$DB_HOST" > DB_HOST
+            echo "$DB_USER" > DB_USER
+            echo "$DB_NAME" > DB_NAME
 
       - run:
           name: Install golang-migrate
@@ -136,7 +138,8 @@ jobs:
             DB_NAME=$(cat DB_NAME)
 
             echo "Connecting to DB at $DB_HOST"
-            migrate -verbose -path db/migrations -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
+            migrate -verbose -path db/migrations \
+              -database "postgres://${DB_USER}:${TF_VAR_db_pass}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable" up
 
   test-go-api:
     docker:
