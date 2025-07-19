@@ -73,6 +73,7 @@ jobs:
     steps:
       - checkout
       - install-tools
+
       - run:
           name: Authenticate GCP
           command: |
@@ -90,26 +91,29 @@ jobs:
       - run:
           name: Extract DB info from Terraform or fallback to gcloud
           command: |
+            source $BASH_ENV
             cd terraform
             terraform init || true
 
-            terraform output -raw db_public_ip > ../DB_HOST || true
-            terraform output -raw db_user > ../DB_USER || true
-            terraform output -raw db_name > ../DB_NAME || true
+            terraform output -raw db_public_ip > ../DB_HOST 2>/dev/null || true
+            terraform output -raw db_user > ../DB_USER 2>/dev/null || true
+            terraform output -raw db_name > ../DB_NAME 2>/dev/null || true
 
-            # Fallback if any of the outputs are missing
-            if [ ! -s ../DB_HOST ]; then
-              echo "Falling back to gcloud to fetch DB info..."
-              DB_HOST=$(gcloud sql instances describe $INSTANCE_NAME --format="value(ipAddresses[0].ipAddress)")
-              echo "$DB_HOST" > ../DB_HOST
+            cd ..
+
+            # Fallback to gcloud if any values are missing or empty
+            if [ ! -s DB_HOST ]; then
+              echo "Falling back to gcloud to fetch DB host..."
+              DB_HOST=$(gcloud sql instances describe "$INSTANCE_NAME" --format="value(ipAddresses[0].ipAddress)")
+              echo "$DB_HOST" > DB_HOST
             fi
 
-            if [ ! -s ../DB_USER ]; then
-              echo "postgres" > ../DB_USER
+            if [ ! -s DB_USER ]; then
+              echo "postgres" > DB_USER
             fi
 
-            if [ ! -s ../DB_NAME ]; then
-              echo "devdb" > ../DB_NAME
+            if [ ! -s DB_NAME ]; then
+              echo "devdb" > DB_NAME
             fi
 
       - run:
