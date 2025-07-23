@@ -84,7 +84,7 @@ jobs:
       - run:
           name: Generate unique instance name
           command: |
-            RAND_ID=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 6 | head -n 1)
+            RAND_ID=$(openssl rand -hex 3 | tr '[:upper:]' '[:lower:]')
             SANITIZED_BRANCH=$(echo "$CIRCLE_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
             export INSTANCE_NAME="sql-${SANITIZED_BRANCH}-${RAND_ID}"
             echo "export INSTANCE_NAME=$INSTANCE_NAME" >> $BASH_ENV
