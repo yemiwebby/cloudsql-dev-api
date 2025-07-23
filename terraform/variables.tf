@@ -10,3 +10,9 @@ variable "db_pass" {}
 variable "db_name" {
   default = "devdb"
 }
+
+
+variable "gcp_credentials_json" {
+  description = "GCP service account JSON"
+  type        = string
+}

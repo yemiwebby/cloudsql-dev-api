@@ -1,6 +1,7 @@
 provider "google" {
   project = var.project_id
   region  = var.region
+  credentials = var.gcp_credentials_json
 }
 
 resource "google_sql_database_instance" "postgres" {
@@ -8,12 +9,19 @@ resource "google_sql_database_instance" "postgres" {
   database_version = "POSTGRES_13"
   region           = var.region
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   settings {
     tier = "db-f1-micro"
 
     ip_configuration {
       ipv4_enabled    = true
-      require_ssl     = false
+      authorized_networks {
+        name  = "allow-all"
+        value = "0.0.0.0/0"
+      }
     }
 
     backup_configuration {
