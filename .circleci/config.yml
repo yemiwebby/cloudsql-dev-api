@@ -198,23 +198,39 @@ jobs:
             echo "DB_NAME: $DB_NAME"
             echo "DB_PORT: $DB_PORT"
 
-            go run main.go &
+            # Start Go API and capture output
+            echo "Starting Go application..."
+            go run main.go > api.log 2>&1 &
             APP_PID=$!
             echo "Go API started with PID: $APP_PID"
 
-            # Wait a bit longer for the server to start
+            # Wait for the server to start and check if it's actually listening
             sleep 10
+
+            echo "Checking if process is still running..."
+            if kill -0 $APP_PID 2>/dev/null; then
+              echo "Process is running. Checking application logs:"
+              cat api.log
+              echo "--- End of logs ---"
+              
+              echo "Checking if port 8080 is listening..."
+              if netstat -ln | grep :8080; then
+                echo "Port 8080 is listening!"
+              else
+                echo "Port 8080 is NOT listening. Application may have failed to start."
+              fi
+            else
+              echo "Process has exited. Application logs:"
+              cat api.log
+              exit 1
+            fi
 
             echo "Testing health endpoint..."
             if curl --fail --max-time 10 http://localhost:8080/health; then
               echo "Health check passed!"
             else
-              echo "Health check failed. Checking if process is still running..."
-              if kill -0 $APP_PID 2>/dev/null; then
-                echo "Process is still running, but health check failed"
-              else
-                echo "Process has exited"
-              fi
+              echo "Health check failed. Final application logs:"
+              cat api.log
               kill $APP_PID 2>/dev/null || true
               exit 1
             fi
