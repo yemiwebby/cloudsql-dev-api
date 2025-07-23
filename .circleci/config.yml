@@ -156,9 +156,18 @@ jobs:
       - image: cimg/go:1.24
     environment:
       DB_PORT: 5432
+      TF_VAR_db_pass: postgres123
     steps:
       - checkout
       - install-tools
+
+      - run:
+          name: Authenticate GCP
+          command: |
+            echo "$GCLOUD_SERVICE_KEY" > creds.json
+            gcloud auth activate-service-account --key-file=creds.json
+            gcloud config set project "$GCP_PROJECT_ID"
+
       - run:
           name: Sanitize branch name
           command: |
