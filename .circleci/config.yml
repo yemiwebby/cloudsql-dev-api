@@ -293,5 +293,3 @@ workflows:
           filters:
             branches:
               only: main
-          requires:
-            - provision-db
