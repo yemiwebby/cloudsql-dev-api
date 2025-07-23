@@ -177,6 +177,7 @@ jobs:
       - run:
           name: Get DB Info via gcloud
           command: |
+            source $BASH_ENV
             DB_HOST=$(gcloud sql instances describe sql-${SANITIZED_BRANCH} --format='value(ipAddresses[0].ipAddress)')
             DB_USER="postgres"
             DB_NAME="devdb"
@@ -187,12 +188,37 @@ jobs:
       - run:
           name: Run and Test Go API
           command: |
+            source $BASH_ENV
             export DB_PASS=$TF_VAR_db_pass
             export PORT=8080
+
+            echo "Starting Go API with DB connection:"
+            echo "DB_HOST: $DB_HOST"
+            echo "DB_USER: $DB_USER"
+            echo "DB_NAME: $DB_NAME"
+            echo "DB_PORT: $DB_PORT"
+
             go run main.go &
             APP_PID=$!
-            sleep 5
-            curl --fail http://localhost:8080/health
+            echo "Go API started with PID: $APP_PID"
+
+            # Wait a bit longer for the server to start
+            sleep 10
+
+            echo "Testing health endpoint..."
+            if curl --fail --max-time 10 http://localhost:8080/health; then
+              echo "Health check passed!"
+            else
+              echo "Health check failed. Checking if process is still running..."
+              if kill -0 $APP_PID 2>/dev/null; then
+                echo "Process is still running, but health check failed"
+              else
+                echo "Process has exited"
+              fi
+              kill $APP_PID 2>/dev/null || true
+              exit 1
+            fi
+
             kill $APP_PID
 
   destroy-db:
