@@ -201,7 +201,7 @@ jobs:
             # Pre-download dependencies to avoid delays
             echo "Downloading Go dependencies..."
             go mod download
-            
+
             # Build the application first
             echo "Building Go application..."
             go build -o api main.go
@@ -215,7 +215,7 @@ jobs:
             # Wait longer for the server to start
             echo "Waiting for application to start..."
             sleep 15
-            
+
             echo "Checking if process is still running..."
             if kill -0 $APP_PID 2>/dev/null; then
               echo "Process is running. Checking application logs:"
@@ -244,7 +244,9 @@ jobs:
               exit 1
             fi
 
-            kill $APP_PID  destroy-db:
+            kill $APP_PID
+
+  destroy-db:
     executor: base
     environment:
       TF_VAR_db_pass: postgres123
